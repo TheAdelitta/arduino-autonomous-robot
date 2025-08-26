@@ -10,26 +10,42 @@ LiquidCrystal_I2C lcd(0x27, 16, 2); // specifices how to refrence the LCD and it
 
 // define varibales
 
+//Strings are padded to 16 chars to fully overwrite the LCD line
 char array1[] = "Robot State:    ";
 char array2[] = "STOPPED         ";
 char array3[] = "BACKWARD        ";
 char array4[] = "FORWARD         ";
 char array5[] = "OUT OF RANGE    ";
 
-int echoPin = 8; // attach pin D8 to pin Echo of HC-SR04
-int trigPin = 7; // attach pin D7 to pin Trig of HC-SR04
-int in1 = 4; // variable names for the L298N
-int in2 = 5; // variable names for the L298N
-int in3 = 9; // variable names for the L298N
-int in4 = 10; // variable names for the L298N
+//Ultrasonic pins
+const echoPin = 8; // attach pin D8 to pin Echo of HC-SR04
+const trigPin = 7; // attach pin D7 to pin Trig of HC-SR04
 
-int LCDprev = 99; // helps to update the LCD state tracks previous
-int LCDcurr = 100; // helps to update the LCD state tracks current
+//L298N motor pins
+const in1 = 4; // variable names for the L298N
+const in2 = 5; // variable names for the L298N
+const in3 = 9; // variable names for the L298N
+const in4 = 10; // variable names for the L298N
 
-int ledpin = 13; //specify the LED pin to pin 13
+//L298N enable pins for PWM speed control
+const LCDprev = 99; // helps to update the LCD state tracks previous
+const LCDcurr = 100; // helps to update the LCD state tracks current
 
-long duration; // duration of sound wave travel
-int distance; // distance measurement
+//LED
+const ledpin = 13; //specify the LED pin to pin 13
+
+//Distance variables
+long duration = 0; // duration of sound wave travel
+int distance = 0; // distance measurement
+
+//LCD state tracking
+int LCDprev=99;
+int LCDcurr=100;
+
+//Speed settings 0..255
+int speedLeft=170;
+int speedRight=170;
+
 
 void setup() {
   lcd.init(); // initializes LCD
@@ -49,6 +65,13 @@ void setup() {
   lcd.setCursor(0, 0); // set cursor at top left
 
   lcd.print (array1); //prints the first line "Robot State:
+
+ //Seed random for turn choice
+  randomSeed(analogRead(A0));
+
+  //Initial stop
+  stopMotors();
+  writeLCD(array2);
   
 }
 
@@ -69,77 +92,128 @@ void loop() {
   digitalWrite (trigPin, HIGH); //makes trig pin high
   delayMicroseconds (10) ; //continues high trig pin state for 10 microseconds
   digitalWrite (trigPin, LOW); //after 10 microseconds trig pin is brought low
-  duration = pulseIn (echoPin, HIGH); //reads echo as it receives the pulse and stores duration
-  distance = duration * 0.034 / 2; // Converts the time of flight to distance to object
+
+  
+//Read echo and compute distance in cm
+  duration=pulseIn(echoPin,HIGH,30000);
+  if(duration==0){
+    distance=400;
+  }else{
+    distance=duration*0.034/2;
+  }
 
   // Displays the distance on the serial Monitor
   Serial.print ("Distance: ");
   Serial.print (distance);
   Serial.println(" cm");
   
-  if (distance <= 15) {
-    LCDcurr = 1;
+  //Simple hysteresis band to reduce flip-flop near thresholds
+  const int nearThresh=15;
+  const int stopThresh=30;
+  const int goThresh=45;
 
-    digitalWrite(in1, LOW);
-    digitalWrite(in2, HIGH);
-    digitalWrite(in3, LOW);
-    digitalWrite(in4, HIGH);
-    digitalWrite(ledpin, HIGH);
-
-    if (LCDprev != LCDcurr) {
-      lcd.setCursor(0, 1);
-      lcd.print(array3);
-      delay(10);
+  if(distance<=nearThresh){
+    LCDcurr=1;
+    digitalWrite(ledpin,HIGH);
+    //Back up briefly
+    driveBackward(speedLeft,speedRight);
+    writeLCD(array3);
+    delay(400);
+    //Random turn
+    if(random(0,2)==0){
+      LCDcurr=6;
+      turnLeft(180);
+      writeLCD(array6);
+    }else{
+      LCDcurr=7;
+      turnRight(180);
+      writeLCD(array7);
     }
-    
-  } else if (distance <= 30) {
-    LCDcurr = 2;
-
-    digitalWrite(in1, LOW);
-    digitalWrite(in2, LOW);
-    digitalWrite(in3, LOW);
-    digitalWrite(in4, LOW);
-    digitalWrite(ledpin, LOW);
-
-    if (LCDprev != LCDcurr) {
-      lcd.setCursor(0, 1);
-      lcd.print(array2);
-      delay(10);
-    }
-    
-  } else if (distance <= 45) {
-    LCDcurr = 3;
-
-    digitalWrite(in1, HIGH);
-    digitalWrite(in2, LOW);
-    digitalWrite(in3, HIGH);
-    digitalWrite(in4, LOW);
-    digitalWrite(ledpin, HIGH);
-
-    if (LCDprev != LCDcurr) {
-      lcd.setCursor(0, 1);
-      lcd.print(array4);
-      delay(10);
-    }
-    
-  } else {
-    LCDcurr = 4;
-
-    digitalWrite(in1, LOW);
-    digitalWrite(in2, LOW);
-    digitalWrite(in3, LOW);
-    digitalWrite(in4, LOW);
-    digitalWrite(ledpin, LOW);
-
-    if (LCDprev != LCDcurr) {
-      lcd.setCursor(0, 1);
-      lcd.print(array5);
-      delay(10);
-    }
-    
+  }else if(distance<=stopThresh){
+    LCDcurr=2;
+    digitalWrite(ledpin,LOW);
+    stopMotors();
+    writeLCD(array2);
+  }else if(distance<=goThresh){
+    LCDcurr=3;
+    digitalWrite(ledpin,HIGH);
+    driveForward(speedLeft,speedRight);
+    writeLCD(array4);
+  }else{
+    LCDcurr=4;
+    digitalWrite(ledpin,LOW);
+    driveForward(speedLeft,speedRight);
+    writeLCD(array5);
   }
-  delay(10);
-  
+
+  delay(20);
 }
 
+//Helper to update second LCD line only if state changed
+void writeLCD(const char* msg){
+  if(LCDprev!=LCDcurr){
+    lcd.setCursor(0,1);
+    lcd.print(msg);
+  }
+}
 
+//Motor primitives
+void driveForward(int ls,int rs){
+  analogWrite(enA,constrain(ls,0,255));
+  analogWrite(enB,constrain(rs,0,255));
+
+  digitalWrite(in1,HIGH);
+  digitalWrite(in2,LOW);
+
+  digitalWrite(in3,HIGH);
+  digitalWrite(in4,LOW);
+}
+
+void driveBackward(int ls,int rs){
+  analogWrite(enA,constrain(ls,0,255));
+  analogWrite(enB,constrain(rs,0,255));
+
+  digitalWrite(in1,LOW);
+  digitalWrite(in2,HIGH);
+
+  digitalWrite(in3,LOW);
+  digitalWrite(in4,HIGH);
+}
+
+void stopMotors(){
+  analogWrite(enA,0);
+  analogWrite(enB,0);
+
+  digitalWrite(in1,LOW);
+  digitalWrite(in2,LOW);
+  digitalWrite(in3,LOW);
+  digitalWrite(in4,LOW);
+}
+
+void turnLeft(int ms){
+  //left motor slow or reverse, right motor forward
+  analogWrite(enA,120);
+  analogWrite(enB,190);
+
+  digitalWrite(in1,LOW);
+  digitalWrite(in2,HIGH);
+
+  digitalWrite(in3,HIGH);
+  digitalWrite(in4,LOW);
+
+  delay(ms);
+}
+
+void turnRight(int ms){
+  //right motor slow or reverse, left motor forward
+  analogWrite(enA,190);
+  analogWrite(enB,120);
+
+  digitalWrite(in1,HIGH);
+  digitalWrite(in2,LOW);
+
+  digitalWrite(in3,LOW);
+  digitalWrite(in4,HIGH);
+
+  delay(ms);
+}
